@@ -1,0 +1,6 @@
+Spectrum.xcodeproj/xcuserdata/
+Spectrum.xcodeproj/project.xcworkspace/xcuserdata/
+/build/
+.DS_Store
+DerivedData/
+*.dmg

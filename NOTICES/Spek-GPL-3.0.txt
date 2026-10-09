@@ -1,0 +1,10 @@
+Spek — https://github.com/alexkay/spek — GPL-3.0
+Repository LICENSE is the GPL-3.0 text; source files carry no per-file headers. Copyright
+statement from src/spek-window.cc (About dialog), verified 2026-09-27. Same license family as
+ours, so the obligation is retaining the copyright and marking modifications; no extra text.
+Palette ramp in spek-palette.cc is itself "a modified version of Dan Bruton's algorithm"
+(http://www.physics.sfasu.edu/astro/color/spectra.html).
+Used by: Spectrum
+----------------------------------------------------------------------
+
+Copyright (c) 2010-2013 Alexander Kojevnikov and contributors
