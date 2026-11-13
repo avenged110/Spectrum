@@ -603,8 +603,10 @@ final class SpectrogramViewModel: Loggable {
 
     // MARK: - Channel selection
 
+    /// Refused while a sheet is attached, like the cycle actions below: a
+    /// selection mid-export would start a new run the export then captures.
     func selectChannel(_ index: Int) {
-        guard let meta = metadata else { return }
+        guard let meta = metadata, !isSheetPresented else { return }
         let clamped = max(0, min(index, meta.channelCount - 1))
         guard clamped != settings.channelIndex else { return }
         log("Channel selected: \(clamped) (of \(meta.channelCount))")
@@ -629,7 +631,7 @@ final class SpectrogramViewModel: Loggable {
     // MARK: - Stream selection
 
     func selectStream(_ index: Int) {
-        guard let meta = metadata else { return }
+        guard let meta = metadata, !isSheetPresented else { return }
         let clamped = max(0, min(index, meta.streamCount - 1))
         guard clamped != settings.streamIndex else { return }
         log("Stream selected: \(clamped) (of \(meta.streamCount))")

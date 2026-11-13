@@ -178,6 +178,26 @@ struct DropTargetView: NSViewRepresentable {
 
         weak var coordinator: Coordinator?
 
+        /// The window whose cursor rects this drag froze, kept so the thaw
+        /// reaches the same window exactly once. Taken from the drag itself
+        /// (`draggingDestinationWindow`), not from `NSView.window`, which AppKit
+        /// declares `unowned(unsafe)` and strict memory safety flags; weak, so
+        /// a window closed mid-drag is simply skipped.
+        private weak var frozenWindow: NSWindow?
+
+        /// Stop AppKit resetting the cursor during the drag. See `draggingEntered`.
+        private func freezeCursorRects(in window: NSWindow?) {
+            guard frozenWindow == nil, let window else { return }
+            window.disableCursorRects()
+            frozenWindow = window
+        }
+
+        /// Undo `freezeCursorRects`, once.
+        private func thawCursorRects() {
+            frozenWindow?.enableCursorRects()
+            frozenWindow = nil
+        }
+
         // .fileURL and NSPasteboard.PasteboardType(UTType.fileURL.identifier) resolve
         // to the same pasteboard type string ("public.file-url"). Registering both
         // was harmless but redundant; one entry is sufficient.
@@ -208,10 +228,7 @@ struct DropTargetView: NSViewRepresentable {
             // disableCursorRects() is the only window-level API that reliably
             // prevents that from happening regardless of which view in the
             // hierarchy triggers the reset.
-            //
-            // `unsafe` here and below: AppKit declares `NSView.window`
-            // `unowned(unsafe)`. The view is in the window for the whole drag.
-            unsafe window?.disableCursorRects()
+            freezeCursorRects(in: sender.draggingDestinationWindow)
             return .copy
         }
 
@@ -226,7 +243,7 @@ struct DropTargetView: NSViewRepresentable {
             // enableCursorRects() is balanced against disableCursorRects() above;
             // calling it here restores normal cursor-tracking behavior so that
             // hover states and other cursor effects work correctly after the drag.
-            unsafe window?.enableCursorRects()
+            thawCursorRects()
         }
 
         override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
@@ -237,7 +254,7 @@ struct DropTargetView: NSViewRepresentable {
                 // rects here ourselves to prevent both the blue ring and the
                 // cursor freeze from lingering indefinitely.
                 coordinator?.isTargeted.wrappedValue = false
-                unsafe window?.enableCursorRects()
+                thawCursorRects()
                 return false
             }
             // Disable the system's "animate drag image to destination" behavior
@@ -260,7 +277,7 @@ struct DropTargetView: NSViewRepresentable {
             coordinator?.isTargeted.wrappedValue = false
             // The drag session is ending via a successful drop; re-enable cursor
             // rects so the window resumes normal cursor tracking after teardown.
-            unsafe window?.enableCursorRects()
+            thawCursorRects()
             guard let url = fileURL(from: sender.draggingPasteboard) else { return false }
             coordinator?.onDrop(url)
             return true

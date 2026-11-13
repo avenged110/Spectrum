@@ -24,6 +24,7 @@
 		A558A84274014522AAC71709 /* 21.10 MetadataBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0AC663B0BB4227A3D801CC /* 21.10 MetadataBar.swift */; };
 		B8D67E4381BA4941A65F4C1B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F67BEF2339324AAE8E3DB886 /* Assets.xcassets */; };
 		BF6D6DA03F8642E88D224CBA /* 20.00 ViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AD703FB0D734CECA0C28861 /* 20.00 ViewModel.swift */; };
+		C69F06AEC90C72A5209B5BCC /* 54.30 UtilityKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = E67BC98CA206326EADA9E9AF /* 54.30 UtilityKit.swift */; };
 		CE5AEEC62F8C7587009B76BD /* 52.00 GlobalUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE5AEEC52F8C7587009B76BD /* 52.00 GlobalUtilities.swift */; };
 		CE5AEECC2F8EF2D3009B76BD /* 10.20 MenuBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE5AEECB2F8EF2D3009B76BD /* 10.20 MenuBar.swift */; };
 		CE5AEECE2F901E54009B76BD /* 53.00 Preferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE5AEECD2F901E54009B76BD /* 53.00 Preferences.swift */; };
@@ -79,6 +80,7 @@
 		CEFF000000000000000000A8 /* LICENSE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = LICENSE.md; sourceTree = "<group>"; };
 		CEFF000000000000000000A9 /* COPYING.LGPLv2.1 */ = {isa = PBXFileReference; lastKnownFileType = text; path = COPYING.LGPLv2.1; sourceTree = "<group>"; };
 		CEFF000000000000000000AA /* libswresample.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libswresample.a; sourceTree = "<group>"; };
+		E67BC98CA206326EADA9E9AF /* 54.30 UtilityKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "54.30 UtilityKit.swift"; sourceTree = "<group>"; };
 		EE15D5D05CE54982BEF76590 /* 10.10 ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "10.10 ContentView.swift"; sourceTree = "<group>"; };
 		F3AFD4586AE6499D9359E7AC /* 21.00 SpectrogramView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "21.00 SpectrogramView.swift"; sourceTree = "<group>"; };
 		F67BEF2339324AAE8E3DB886 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -125,6 +127,7 @@
 				CE83C22F2F88F669004A63EC /* 54.00 DebugLogKit.swift */,
 				CE5AEF100000000000000001 /* 54.10 SettingsKit.swift */,
 				CE5AEF110000000000000001 /* 54.20 MenuBarKit.swift */,
+				E67BC98CA206326EADA9E9AF /* 54.30 UtilityKit.swift */,
 				CE5AEF100000000000000003 /* Credits.html */,
 				9BBCF7C12DCDF3E4D3AD4D4E /* COPYING.LGPLv2.1 */,
 				302AACEC6BEB3683BF2A25A3 /* COPYING */,
@@ -262,6 +265,7 @@
 				CE83C2302F88F669004A63EC /* 54.00 DebugLogKit.swift in Sources */,
 				CE5AEF100000000000000002 /* 54.10 SettingsKit.swift in Sources */,
 				CE5AEF110000000000000002 /* 54.20 MenuBarKit.swift in Sources */,
+				C69F06AEC90C72A5209B5BCC /* 54.30 UtilityKit.swift in Sources */,
 				A558A84274014522AAC71709 /* 21.10 MetadataBar.swift in Sources */,
 				6C75BA560C524EECB9895063 /* 30.00 ImageBuilder.swift in Sources */,
 				5278861E1F074955AD5B25E7 /* 31.00 AudioDecoder.swift in Sources */,
@@ -291,7 +295,7 @@
 				CODE_SIGN_ENTITLEMENTS = Spectrum/Spectrum.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 157;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -307,7 +311,7 @@
 					"$(SRCROOT)/Spectrum/ThirdParty/FFmpeg/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				OTHER_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = app.spectrum;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -331,7 +335,7 @@
 				CODE_SIGN_ENTITLEMENTS = Spectrum/Spectrum.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 157;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -347,7 +351,7 @@
 					"$(SRCROOT)/Spectrum/ThirdParty/FFmpeg/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				OTHER_LDFLAGS = "";
 				PRODUCT_BUNDLE_IDENTIFIER = app.spectrum;
 				PRODUCT_NAME = "$(TARGET_NAME)";

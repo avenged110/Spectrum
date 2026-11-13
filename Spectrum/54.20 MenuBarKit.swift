@@ -1,47 +1,49 @@
 // MARK: - MenuBarKit.swift
 // Copyright © 2026 avenged110.
 // SPDX-License-Identifier: GPL-3.0-only
-//
-// STANDARDIZED MAIN-MENU-BAR BUILDING BLOCKS — pick the pieces you want, leave the rest.
-//
-// The shared chrome of the SwiftUI `Commands` menu bars in PhotoGallery, Spectrum, Film
-// Tracker, nvNotes and Compare Folders: the application menu's About / Settings… / Hide /
-// Quit items, the emptied system slots, the AppKit-validated Edit menu, the restored
-// "Bring All to Front", the launch-time flags that strip Dictation and Emoji & Symbols, and
-// the refresh-on-open hook several menus use to stay current. Menu CONTENT — Film, Folder,
-// Channel, Stream, the File and View items — is app logic and stays in each app.
-//
-// Not to be confused with `MenuControlKit.swift`, which builds a menu-bar APPLET's status
-// item and its drop-down. This file is for the menu bar of a windowed app.
-//
-// EVERY PIECE STANDS ALONE
-// ────────────────────────
-// Each `Commands` struct below owns exactly the slots its documentation names and nothing
-// else, so any subset can be dropped into an app's own `Commands` body next to its
-// hand-written groups. Nothing here depends on anything else here except
-// `StandardEditMenu` → `MenuTextFocus` (and `StandardEditCommands` is always paired with
-// `StandardEditMenu`), and nothing depends on the other shared files.
-//
-//   var body: some Commands {
-//       AppInfoCommands(appName: "Spectrum")
-//       AppSettingsCommands { NotificationCenter.default.post(name: .openSpectrumSettings,
-//                                                             object: nil) }
-//       // no Save/Print/Services empties after .commandsRemoved() — see EmptyCommandGroup
-//       StandardEditCommands()      // + StandardEditMenu.install(undoRedo: .suppressed)
-//       BringAllToFrontCommands()
-//       // …the app's own File / View / custom menus…
-//   }
-//
-// ONE RULE: A SLOT HAS ONE OWNER
-// ──────────────────────────────
-// Two `CommandGroup(replacing:)` for the same placement — one here, one in the app — do
-// not merge; which one wins is unspecified and has changed between macOS releases. If an
-// app needs its own version of a slot, it skips the piece that owns it. The slots each
-// piece owns are listed in its doc comment and in the README.
-//
-// Every piece is also a single `Commands` value, which counts as one argument against
-// `CommandsBuilder`'s ten-per-block limit, so adopting them shrinks the `Group {}` splitting
-// the hand-written bodies needed.
+/// Drop-in main-menu-bar building blocks for a windowed SwiftUI app: standard command groups,
+/// an AppKit-validated Edit menu, and menu-refresh hooks.
+///
+/// STANDARDIZED MAIN-MENU-BAR BUILDING BLOCKS — pick the pieces you want, leave the rest.
+///
+/// The common chrome of a SwiftUI `Commands` menu bar: the application menu's About / Settings… / Hide /
+/// Quit items, the emptied system slots, the AppKit-validated Edit menu, the restored
+/// Window menu items (Minimize, Zoom, Bring All to Front), the launch-time flags that strip Dictation and Emoji & Symbols, and
+/// the refresh-on-open hook several menus use to stay current. Menu CONTENT — the app's own
+/// menus and its File and View items — is app logic and stays in each app.
+///
+/// Not to be confused with `MenuControlKit.swift`, which builds a menu-bar APPLET's status
+/// item and its drop-down. This file is for the menu bar of a windowed app.
+///
+/// EVERY PIECE STANDS ALONE
+/// ────────────────────────
+/// Each `Commands` struct below owns exactly the slots its documentation names and nothing
+/// else, so any subset can be dropped into an app's own `Commands` body next to its
+/// hand-written groups. Nothing here depends on anything else here except
+/// `StandardEditMenu` → `MenuTextFocus` (and `StandardEditCommands` is always paired with
+/// `StandardEditMenu`), and nothing depends on the other shared files.
+///
+///   var body: some Commands {
+///       AppInfoCommands(appName: "MyApp")
+///       AppSettingsCommands { NotificationCenter.default.post(name: .openMyAppSettings,
+///                                                             object: nil) }
+///       // no Save/Print/Services empties after .commandsRemoved() — see EmptyCommandGroup
+///       StandardEditCommands()      // + StandardEditMenu.install(undoRedo: .suppressed)
+///       MinimizeZoomCommands()      // only after .commandsRemoved()
+///       BringAllToFrontCommands()
+///       // …the app's own File / View / custom menus…
+///   }
+///
+/// ONE RULE: A SLOT HAS ONE OWNER
+/// ──────────────────────────────
+/// Two `CommandGroup(replacing:)` for the same placement — one here, one in the app — do
+/// not merge; which one wins is unspecified and has changed between macOS releases. If an
+/// app needs its own version of a slot, it skips the piece that owns it. The slots each
+/// piece owns are listed in its doc comment and in the README.
+///
+/// Every piece is also a single `Commands` value, which counts as one argument against
+/// `CommandsBuilder`'s ten-per-block limit, so adopting them shrinks the `Group {}` splitting
+/// the hand-written bodies needed.
 
 import AppKit
 import Combine
@@ -129,9 +131,8 @@ struct AppVisibilityCommands: Commands {
 ///
 /// Owns: `.appTermination`.
 ///
-/// `action` defaults to `NSApp.terminate(nil)`. Film Tracker passes its own, which
-/// dismisses a locked recovery sheet first because AppKit silently refuses to terminate
-/// while a sheet is attached.
+/// `action` defaults to `NSApp.terminate(nil)`. Pass your own to, for example, dismiss
+/// an attached sheet first: AppKit silently refuses to terminate while a sheet is attached.
 struct AppTerminationCommands: Commands {
     let appName: String
     let action: @MainActor () -> Void
@@ -173,8 +174,8 @@ struct ServicesSuppressionCommands: Commands {
 ///
 /// Only empty a slot that actually has items. After `.commandsRemoved()` most slots are
 /// already empty, and emptying one again still gives it a section of its own — which shows
-/// as a stray separator (Spectrum: two at the bottom of the File menu from `.saveItem` and
-/// `.printItem`, and a doubled one in the application menu from
+/// as a stray separator (for example two at the bottom of the File menu from `.saveItem`
+/// and `.printItem`, and a doubled one in the application menu from
 /// `ServicesSuppressionCommands`). Compare a dump of the menu tree with and without it.
 ///
 /// Common uses, each its own line so an app takes only the ones it means:
@@ -196,9 +197,8 @@ struct ServicesSuppressionCommands: Commands {
 /// versions as SwiftUI strips them again.
 ///
 /// ### Help menu
-/// `EmptyCommandGroup(.help)` removes the Help menu in Spectrum and Compare Folders. It
-/// does not in nvNotes or PhotoGallery, whose `Commands` bodies re-evaluate on selection
-/// changes: the emptied menu's title stays in the menu bar and every rebuild re-adds it.
+/// `EmptyCommandGroup(.help)` removes the Help menu, except in an app whose `Commands`
+/// body re-evaluates (on selection changes, say): the emptied menu's title stays in the menu bar and every rebuild re-adds it.
 /// Those apps keep `EmptyCommandGroup(.help)` and add `HelpMenuRemover.install()`.
 /// (`.commandsRemoved()` on the scene drops the Help menu outright — see
 /// `HelpMenuRemover`.)
@@ -247,16 +247,16 @@ struct StandardEditCommands: Commands {
 ///
 ///     // applicationDidFinishLaunching
 ///     StandardEditMenu.install()                                  // text only, with undo
-///     StandardEditMenu.install(undoRedo: .suppressed)              // Spectrum
-///     StandardEditMenu.install(selectAll: .scoped(                 // Film Tracker
-///         isAvailable: { canSelectAllFilms() }, perform: { selectAllFilms() }))
+///     StandardEditMenu.install(undoRedo: .suppressed)              // no undo
+///     StandardEditMenu.install(selectAll: .scoped(                 // app selection too
+///         isAvailable: { canSelectAllItems() }, perform: { selectAllItems() }))
 ///
 /// Two AppKit/SwiftUI behaviors it handles:
 /// - SwiftUI rebuilds the menu bar whenever command state changes (a file load that
 ///   changes a submenu, for example) and drops every top-level item it did not create.
 ///   The installer watches the main menu's item notifications and puts the Edit menu back
 ///   in the same run-loop pass, before the menu bar redraws or a key equivalent is matched.
-///   (Measured in Spectrum: present at every 100 ms sample through a file load.)
+///   (Measured: present at every 100 ms sample through a file load.)
 /// - AppKit appends AutoFill, Start Dictation… and Emoji & Symbols to anything titled
 ///   "Edit". The menu rebuilds its own items on every update, so those never appear.
 ///   (`MenuBarPolicy.suppressInputMenuItems()` remains the belt to this suspenders.)
@@ -267,9 +267,9 @@ final class StandardEditMenu: NSObject, NSMenuDelegate {
     enum UndoRedo {
         /// ⌘Z / ⇧⌘Z as `undo:` / `redo:` through the responder chain — enabled whenever the
         /// first responder's undo manager has something to undo, including in any text
-        /// field. (PhotoGallery, Film Tracker.)
+        /// field.
         case responderChain
-        /// No Undo or Redo items. (Spectrum.)
+        /// No Undo or Redo items.
         case suppressed
     }
 
@@ -280,7 +280,7 @@ final class StandardEditMenu: NSObject, NSMenuDelegate {
         /// Text first, then the app's own selection. While a text-entry control has focus
         /// (`MenuTextFocus.isActive()`) `selectAll:` goes to the responder chain; otherwise
         /// `perform` runs. Enabled when either applies — checked live, each time AppKit
-        /// validates the item. (PhotoGallery's gallery grid, Film Tracker's film list.)
+        /// validates the item. (A gallery grid's or list's own selection.)
         case scoped(isAvailable: @MainActor () -> Bool, perform: @MainActor () -> Void)
     }
 
@@ -308,8 +308,8 @@ final class StandardEditMenu: NSObject, NSMenuDelegate {
         super.init()
         editMenu.delegate = self
         populate(editMenu)
-        // Any menu's notifications: SwiftUI may also swap in a new main menu object.
-        // `menuDidChange` ignores everything but the current main menu.
+        /// Any menu's notifications: SwiftUI may also swap in a new main menu object.
+        /// `menuDidChange` ignores everything but the current main menu.
         for name in [NSMenu.didAddItemNotification, NSMenu.didRemoveItemNotification] {
             NotificationCenter.default.addObserver(
                 self, selector: #selector(menuDidChange(_:)), name: name, object: nil)
@@ -337,10 +337,10 @@ final class StandardEditMenu: NSObject, NSMenuDelegate {
     private func reinstallIfNeeded() {
         guard let mainMenu = NSApp.mainMenu else { return }
         if mainMenu.items.contains(where: { $0.submenu === editMenu }) {
-            hostMenu = mainMenu   // follow the item should SwiftUI ever carry it over
+            hostMenu = mainMenu   /// follow the item should SwiftUI ever carry it over
             return
         }
-        // A menu can have only one supermenu; detach it from a main menu SwiftUI replaced.
+        /// A menu can have only one supermenu; detach it from a main menu SwiftUI replaced.
         if let old = hostMenu, let item = old.items.first(where: { $0.submenu === editMenu }) {
             old.removeItem(item)
         }
@@ -367,7 +367,7 @@ final class StandardEditMenu: NSObject, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
         menu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
         menu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
-        // No separator before Select All: the system Edit menu has none.
+        /// No separator before Select All: the system Edit menu has none.
         switch selectAll {
         case .text:
             menu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)),
@@ -404,10 +404,9 @@ final class StandardEditMenu: NSObject, NSMenuDelegate {
 /// Select All — never for a SwiftUI command's `.disabled(_:)`, which is evaluated too
 /// rarely for focus to be current (see `StandardEditCommands`).
 ///
-/// The single definition of the check Spectrum, PhotoGallery and Film Tracker each carried
-/// (Film Tracker's as `TextInputFocus`). It looks at the key window AND at any sheet
-/// attached to the main window, which is where an open/save panel's filename field lives
-/// while the key window may still report the parent.
+/// It looks at the key window AND at any sheet attached to the main window, which is where
+/// an open/save panel's filename field lives while the key window may still report the
+/// parent.
 enum MenuTextFocus {
 
     /// True when the key window's, or the main window's attached sheet's, first responder
@@ -431,8 +430,8 @@ enum MenuTextFocus {
     static func isActive(in window: NSWindow) -> Bool {
         guard let responder = window.firstResponder else { return false }
         if responder is NSTextField || responder is NSTextView { return true }
-        // SwiftUI's text inputs are private NSView subclasses; their class names are the
-        // only thing that identifies them.
+        /// SwiftUI's text inputs are private NSView subclasses; their class names are the
+        /// only thing that identifies them.
         return matchesTextClassName(String(describing: type(of: responder)))
     }
 
@@ -467,6 +466,29 @@ struct BringAllToFrontCommands: Commands {
     }
 }
 
+/// Minimize (⌘M) and Zoom at the top of the Window menu, above AppKit's Fill / Center group.
+/// Opt-in.
+///
+/// Owns: nothing — it inserts `before: .windowArrangement`.
+///
+/// AppKit adds the tiling items (Fill, Center, Move & Resize) and the window list itself,
+/// but Minimize and Zoom are SwiftUI's, and `.commandsRemoved()` drops them along with
+/// everything else. An app that strips the stock commands therefore needs this to get them
+/// back. Inserted beside the slot rather than replacing it, for the same reason as
+/// `BringAllToFrontCommands`. Pair the two for a complete Window menu:
+///
+///     MinimizeZoomCommands()
+///     BringAllToFrontCommands()
+struct MinimizeZoomCommands: Commands {
+    var body: some Commands {
+        CommandGroup(before: .windowArrangement) {
+            Button("Minimize") { NSApp.keyWindow?.performMiniaturize(nil) }
+                .keyboardShortcut("m", modifiers: .command)
+            Button("Zoom") { NSApp.keyWindow?.performZoom(nil) }
+        }
+    }
+}
+
 // MARK: - Help Menu Removal
 
 /// Keeps the Help menu out of the menu bar of an app with no help book. Opt-in.
@@ -477,14 +499,14 @@ struct BringAllToFrontCommands: Commands {
 ///     // applicationDidFinishLaunching
 ///     HelpMenuRemover.install()
 ///
-/// Needed only where the `Commands` body re-evaluates (nvNotes, PhotoGallery): SwiftUI
+/// Needed only where the `Commands` body re-evaluates: SwiftUI
 /// rebuilds the menu bar on each re-evaluation and puts the Help item back. The remover
 /// takes it out at install time and again from the main menu's own add-item notification —
 /// the signal `StandardEditMenu` uses, in the same run-loop pass, before the menu bar
 /// redraws — with a menu-tracking backstop for any path that posts no notification.
 ///
 /// An app whose window scene uses `.commandsRemoved()` has no Help menu at all and does
-/// not need this (Film Tracker, Spectrum). That is the definitive fix, at the cost of
+/// not need this. That is the definitive fix, at the cost of
 /// rebuilding the application menu's Hide / Quit items (`AppVisibilityCommands`,
 /// `AppTerminationCommands`) and anything else the app relied on the stock groups for.
 ///
@@ -512,7 +534,7 @@ final class HelpMenuRemover: NSObject {
 
     private override init() {
         super.init()
-        // Any menu's notifications: SwiftUI may also swap in a new main menu object.
+        /// Any menu's notifications: SwiftUI may also swap in a new main menu object.
         NotificationCenter.default.addObserver(
             self, selector: #selector(menuDidAddItem(_:)),
             name: NSMenu.didAddItemNotification, object: nil)
@@ -551,7 +573,7 @@ enum MenuBarPolicy {
     /// Show All Tabs items and the Window menu's tab items. Call before the first window
     /// is created — the `App` initializer or `applicationWillFinishLaunching`.
     ///
-    /// Skip it in an app that wants tabs (Compare Folders).
+    /// Skip it in an app that wants tabs.
     static func disableAutomaticWindowTabbing() {
         NSWindow.allowsAutomaticWindowTabbing = false
     }
@@ -583,7 +605,7 @@ enum MenuBarPolicy {
 /// depends on anything else — AppKit state, a file's name on disk — goes stale (as does
 /// `.disabled`; see `StandardEditCommands`). `NSMenu.didBeginTrackingNotification`
 /// fires immediately before a menu is displayed, which is the moment to push the current
-/// value in. (PhotoGallery's `FileMenuTitleSync`.)
+/// value in.
 ///
 /// It observes the notification rather than becoming the menu's `delegate`, which SwiftUI's
 /// Commands bridge owns; replacing that would break `.disabled`.
@@ -609,12 +631,8 @@ final class MenuTrackingObserver: NSObject {
             name: NSMenu.didBeginTrackingNotification, object: nil)
     }
 
+    /// Releasing the observer is how to stop it.
     deinit {
-        NotificationCenter.default.removeObserver(self)
-    }
-
-    /// Stops observing before the object is released.
-    func invalidate() {
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -628,7 +646,7 @@ final class MenuTrackingObserver: NSObject {
 extension View {
     /// Runs `action` each time any menu is about to be shown — the SwiftUI-side
     /// counterpart of `MenuTrackingObserver`, for a view inside a `Commands` body that
-    /// mirrors state into `@State`. (Film Tracker's View-menu submenus.)
+    /// mirrors state into `@State`.
     func onMenuTracking(perform action: @escaping () -> Void) -> some View {
         onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { _ in
             action()

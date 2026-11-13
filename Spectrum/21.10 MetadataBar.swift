@@ -23,8 +23,9 @@ import SwiftUI
 ///                         Frequency badge | Bit Depth badge. The three badges
 ///                         always render at equal width, filling the space
 ///                         between the second picker and the right edge of the
-///                         content area. Badge chrome (background + border) is
-///                         always visible; only the inner text fades.
+///                         content area. Badge chrome (the shared field edge,
+///                         as on the path bar) is always visible; only the
+///                         inner text fades.
 ///
 /// Badge content rules:
 ///   • No file loaded  → empty (chrome visible, no text)
@@ -290,36 +291,31 @@ struct MetadataBar: View {
 
     // MARK: - Badge helper
 
-    /// Renders a metadata badge with permanently visible chrome (background +
-    /// border) and a layout-frozen fading label.
+    /// Renders a metadata badge in the shared field-edge chrome (UtilityKit's
+    /// `.fieldEdgeChrome()`, the same edge the path bar above wears) with a
+    /// layout-frozen fading label. The chrome is applied outside the label's
+    /// opacity, so it stays at full strength while only the text fades.
     ///
     /// The Text is given `.frame(maxWidth: .infinity, maxHeight: .infinity)` so
-    /// it fills the ZStack completely and cannot move relative to the container
+    /// it fills the badge completely and cannot move relative to the container
     /// during the opacity animation. Without this constraint, SwiftUI's layout
     /// engine re-measures the Text's intrinsic size at each interpolation step,
     /// causing a one-pixel shift (wiggle) at the start or end of the fade.
     private func metadataBadge(_ text: String) -> some View {
-        ZStack(alignment: .center) {
-            // Chrome — always at full opacity; never animates.
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color(NSColor.controlBackgroundColor))
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
-
-            // Label — frozen frame prevents any layout shift during the fade.
-            Text(text)
-                .font(.system(size: 12).monospacedDigit())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                // Filling the full ZStack frame is the key fix: the Text's
-                // contribution to layout is constant regardless of its opacity,
-                // so the layout engine has nothing to re-negotiate mid-animation.
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .opacity(text.isEmpty ? 0 : 1)
-                .animation(.easeInOut(duration: fadeDuration), value: text)
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 24)
+        Text(text)
+            .font(.system(size: 12).monospacedDigit())
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            // Filling the full badge frame is the key fix: the Text's
+            // contribution to layout is constant regardless of its opacity,
+            // so the layout engine has nothing to re-negotiate mid-animation.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .opacity(text.isEmpty ? 0 : 1)
+            .animation(.easeInOut(duration: fadeDuration), value: text)
+            // Sized before the chrome, so the edge resolves against the final bounds.
+            .frame(maxWidth: .infinity)
+            .frame(height: pickerRowH)
+            .fieldEdgeChrome()
     }
 }

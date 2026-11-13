@@ -8,12 +8,16 @@
 // full speed in place when the user selects the channel it is computing.
 
 import Foundation
+import Synchronization
 
 /// A mutable CPU budget shared between one pipeline run's decoder threads and FFT batches.
 ///
-/// All state lives behind one `NSCondition` so that both plain `Thread`s (the decoder's
-/// segment workers, which block inside libavcodec and cannot `await`) and the pipeline actor
-/// can wait on it. Waiters are woken whenever the budget changes.
+/// The state lives in a `Mutex`, and an `NSCondition` lets plain `Thread`s (the decoder's
+/// segment workers, which block inside libavcodec and cannot `await`) sleep until it changes.
+/// Every change is made while holding the condition's lock and followed by a broadcast, and
+/// every waiter re-reads the state under that same lock before sleeping, so no wake-up is lost.
+/// Both members are `Sendable`, so the class is checked `Sendable` by the compiler — no
+/// `@unchecked` opt-out.
 ///
 /// - `fftConcurrencyCap`: the most columns computed concurrently per FFT batch.
 /// - `decodeWorkerCap`: how many segment-decoder threads may run at once. The decoder always
@@ -27,11 +31,14 @@ import Foundation
 ///   pipeline's FFT child tasks. Threads re-apply the QoS between chunks and each FFT batch
 ///   reads the priority afresh, so promotion also moves the work off the efficiency cores that
 ///   `.utility` work is steered to on Apple silicon.
-final class PipelineThrottle: @unchecked Sendable {
+final class PipelineThrottle: Sendable {
 
-    /// A budget with no limits — what a foreground run uses.
-    static let unlimited = PipelineThrottle(fftConcurrencyCap: .max, decodeWorkerCap: .max,
-                                            threadQoS: .userInitiated)
+    /// A budget with no limits — what a foreground run uses. A fresh instance per run, not a
+    /// shared one: the budget is mutable state (the pause flag, the decode-slot count), and
+    /// a canceled run's threads can still be releasing slots while its successor acquires.
+    static var unlimited: PipelineThrottle {
+        PipelineThrottle(fftConcurrencyCap: .max, decodeWorkerCap: .max, threadQoS: .userInitiated)
+    }
 
     /// The budget for a speculative prefetch: about half the machine, below the QoS of anything
     /// the user is waiting on. On a 10-core machine that is 5 FFT columns per batch and 4
@@ -43,32 +50,39 @@ final class PipelineThrottle: @unchecked Sendable {
                                 threadQoS:         .utility)
     }
 
+    private struct State {
+        var fftConcurrencyCap: Int
+        var decodeWorkerCap:   Int
+        var isPaused = false
+        var threadQoS: QualityOfService
+        var activeDecodeWorkers = 0
+    }
+
+    private let state: Mutex<State>
+    /// Sleeping and waking only; the state itself is in `state`.
     private let condition = NSCondition()
-    private var _fftConcurrencyCap: Int
-    private var _decodeWorkerCap:   Int
-    private var _isPaused = false
-    private var _threadQoS: QualityOfService
-    private var activeDecodeWorkers = 0
 
     init(fftConcurrencyCap: Int, decodeWorkerCap: Int, threadQoS: QualityOfService) {
-        _fftConcurrencyCap = fftConcurrencyCap
-        _decodeWorkerCap   = decodeWorkerCap
-        _threadQoS         = threadQoS
+        state = Mutex(State(fftConcurrencyCap: fftConcurrencyCap,
+                            decodeWorkerCap: decodeWorkerCap, threadQoS: threadQoS))
+    }
+
+    /// Apply `change` and wake every waiter. Holding the condition's lock across the change
+    /// is what keeps a waiter from checking the old state, missing the broadcast, and sleeping.
+    private func update(_ change: (inout State) -> Void) {
+        condition.lock()
+        state.withLock { change(&$0) }
+        condition.broadcast()
+        condition.unlock()
     }
 
     // MARK: - Reading the budget
 
-    var isPaused: Bool {
-        condition.lock(); defer { condition.unlock() }
-        return _isPaused
-    }
+    var isPaused: Bool { state.withLock { $0.isPaused } }
 
     /// The QoS for the run's decoder threads: `.userInitiated` for a run the user is waiting
     /// on, `.utility` for a prefetch.
-    var threadQoS: QualityOfService {
-        condition.lock(); defer { condition.unlock() }
-        return _threadQoS
-    }
+    var threadQoS: QualityOfService { state.withLock { $0.threadQoS } }
 
     /// Whether this run is the one the user is waiting on.
     var isForeground: Bool { threadQoS == .userInitiated }
@@ -76,38 +90,29 @@ final class PipelineThrottle: @unchecked Sendable {
     /// The priority for the pipeline's FFT child tasks, matching `threadQoS`.
     var taskPriority: TaskPriority { isForeground ? .userInitiated : .utility }
 
-    var decodeWorkerCap: Int {
-        condition.lock(); defer { condition.unlock() }
-        return _decodeWorkerCap
-    }
+    var decodeWorkerCap: Int { state.withLock { $0.decodeWorkerCap } }
 
     /// `preferred` (the pipeline's own choice) clamped to the current cap.
     func fftConcurrency(preferred: Int) -> Int {
-        condition.lock(); defer { condition.unlock() }
-        return max(1, min(preferred, _fftConcurrencyCap))
+        state.withLock { max(1, min(preferred, $0.fftConcurrencyCap)) }
     }
 
     // MARK: - Changing the budget
 
-    func pause() {
-        condition.lock(); _isPaused = true; condition.broadcast(); condition.unlock()
-    }
+    func pause()  { update { $0.isPaused = true } }
 
-    func resume() {
-        condition.lock(); _isPaused = false; condition.broadcast(); condition.unlock()
-    }
+    func resume() { update { $0.isPaused = false } }
 
     /// Lift every cap, raise the QoS and unpause: the run is now the one the user is waiting
     /// on. The decoder threads waiting for a slot start at once, every thread raises its own
     /// QoS at its next chunk, and FFT batches widen and re-prioritize from the next batch on.
     func promote() {
-        condition.lock()
-        _fftConcurrencyCap = .max
-        _decodeWorkerCap   = .max
-        _threadQoS         = .userInitiated
-        _isPaused          = false
-        condition.broadcast()
-        condition.unlock()
+        update {
+            $0.fftConcurrencyCap = .max
+            $0.decodeWorkerCap   = .max
+            $0.threadQoS         = .userInitiated
+            $0.isPaused          = false
+        }
     }
 
     // MARK: - Waiting (decoder threads)
@@ -116,24 +121,24 @@ final class PipelineThrottle: @unchecked Sendable {
     /// effect within one chunk (≈ 65k frames) per worker.
     func blockWhilePaused() {
         condition.lock()
-        while _isPaused { condition.wait() }
+        while state.withLock({ $0.isPaused }) { condition.wait() }
         condition.unlock()
     }
 
     /// Block until a decoder slot is free and the run is not paused, then take the slot.
     func acquireDecodeSlot() {
         condition.lock()
-        while _isPaused || activeDecodeWorkers >= _decodeWorkerCap { condition.wait() }
-        activeDecodeWorkers += 1
+        while !state.withLock({ s in
+            guard !s.isPaused, s.activeDecodeWorkers < s.decodeWorkerCap else { return false }
+            s.activeDecodeWorkers += 1
+            return true
+        }) {
+            condition.wait()
+        }
         condition.unlock()
     }
 
-    func releaseDecodeSlot() {
-        condition.lock()
-        activeDecodeWorkers -= 1
-        condition.broadcast()
-        condition.unlock()
-    }
+    func releaseDecodeSlot() { update { $0.activeDecodeWorkers -= 1 } }
 
     // MARK: - Waiting (pipeline actor)
 

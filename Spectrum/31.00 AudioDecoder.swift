@@ -825,11 +825,17 @@ enum AudioDecoder: Loggable {
 
     /// `codecName` imports as a tuple of 64 CChars; read it as a C string.
     /// Reads up to the first NUL but never past the 64-byte field, so a name
-    /// the shim failed to terminate cannot overrun into the next field.
+    /// the shim failed to terminate cannot overrun into the next field. The
+    /// tuple is walked with `Mirror` rather than viewed as raw bytes: it runs
+    /// a handful of times per file, where the cost is immaterial, and needs
+    /// no opt-out of strict memory safety.
     private static func codecName(of info: SPKFFmpegStreamInfo) -> String {
-        unsafe withUnsafeBytes(of: info.codecName) { raw in
-            unsafe String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
-        }
+        let bytes = Mirror(reflecting: info.codecName).children
+            .lazy
+            .compactMap { $0.value as? CChar }
+            .prefix { $0 != 0 }
+            .map { UInt8(bitPattern: $0) }
+        return String(decoding: Array(bytes), as: UTF8.self)
     }
 }
 
@@ -853,8 +859,9 @@ private enum FFmpegShim {
         unsafe url.withUnsafeFileSystemRepresentation { unsafe SPKFFmpegIsSegmentable($0) } == 1
     }
 
-    /// The shim returns a pointer to a static string.
-    static var versionString: String { unsafe String(cString: SPKFFmpegVersionString()) }
+    /// The shim returns a pointer to a static C string, the one remaining way
+    /// to read it; it never changes, so it is read once.
+    static let versionString: String = unsafe String(cString: SPKFFmpegVersionString())
 }
 
 /// An open shim decoder. Noncopyable, so exactly one owner closes the handle —

@@ -27,18 +27,10 @@ struct AudioMetadata: Sendable, Equatable, Hashable {
                       duration: duration, streamCount: streamCount)
     }
 
-    /// Formatted duration string (e.g., "3:45" or "1:02:15").
+    /// Formatted duration string (e.g., "3:45" or "1:02:15"), in the time
+    /// ruler's own format.
     var formattedDuration: String {
-        let totalSeconds = max(0, duration.saturatingInt)
-        let hours = totalSeconds / 3600
-        let minutes = (totalSeconds % 3600) / 60
-        let seconds = totalSeconds % 60
-
-        if hours > 0 {
-            return "\(hours):\(minutes.zeroPadded(2)):\(seconds.zeroPadded(2))"
-        } else {
-            return "\(minutes):\(seconds.zeroPadded(2))"
-        }
+        RulerCalculator.timeFormatter(max(0, duration))
     }
 
     /// Formatted sample rate (e.g., "44100 Hz" or "96000 Hz").

@@ -6,6 +6,7 @@
 // for metadata-dependent rulers (time and frequency axes) that crossfade via SwiftUI's transition
 // engine when a new file loads.
 
+import CoreImage
 import SwiftUI
 
 /// The main spectrogram rendering view. Uses a layered layout: a SwiftUI
@@ -113,12 +114,7 @@ struct SpectrogramView: View {
     var body: some View {
         GeometryReader { geometry in
             let size = geometry.size
-            let spectrogramRect = CGRect(
-                x: Self.leftPad,
-                y: Self.topPad,
-                width:  max(1, size.width  - Self.leftPad - Self.rightPad),
-                height: max(1, size.height - Self.topPad  - Self.bottomPad)
-            )
+            let spectrogramRect = Self.graphRect(for: size)
 
             ZStack(alignment: .topLeading) {
 
@@ -140,12 +136,20 @@ struct SpectrogramView: View {
                 }
 
                 // ── Layer 3: static chrome (border, palette strip, dB ruler) ───
-                // Independent of metadata; never animates.
-                Canvas { context, _ in
+                // Independent of metadata; never animates. Keyed on everything
+                // it draws from, so a new spectrogram frame — which re-runs this
+                // body up to 60 times a second while a file fills — does not
+                // redraw it (see `KeyedCanvas`).
+                KeyedCanvas(key: ChromeKey(
+                    rect: spectrogramRect, palette: settings.palette,
+                    lowerRange: settings.lowerRange, upperRange: settings.upperRange,
+                    paletteImage: cachedPaletteImage.map(ObjectIdentifier.init)
+                )) { context in
                     drawPaletteStrip(context: &context, rect: spectrogramRect)
                     drawDBRuler(context: &context,      rect: spectrogramRect)
                     drawBorder(context: &context,       rect: spectrogramRect)
                 }
+                .equatable()
 
                 // ── Layer 4: metadata-dependent rulers (time + frequency) ───────
                 // .id(metadata) gives each distinct metadata value its own view
@@ -154,11 +158,13 @@ struct SpectrogramView: View {
                 // arriving one — a true crossfade with zero manual state.
                 // .animation is keyed on metadata so it fires at exactly the
                 // same moment the ViewModel sets the new value, in lockstep with
-                // every other animated element in the UI.
-                Canvas { context, _ in
+                // every other animated element in the UI. Keyed like layer 3.
+                KeyedCanvas(key: RulerKey(rect: spectrogramRect, metadata: metadata,
+                                          effectiveNyquist: effectiveNyquist)) { context in
                     drawTimeRuler(context: &context,      rect: spectrogramRect)
                     drawFrequencyRuler(context: &context, rect: spectrogramRect)
                 }
+                .equatable()
                 .id(metadata)
                 .transition(.opacity)
                 .animation(
@@ -247,12 +253,7 @@ struct SpectrogramView: View {
             }
             .onChange(of: size) { _, newSize in
                 reportSize(newSize)
-                let newRect = CGRect(
-                    x: Self.leftPad, y: Self.topPad,
-                    width:  max(1, newSize.width  - Self.leftPad - Self.rightPad),
-                    height: max(1, newSize.height - Self.topPad  - Self.bottomPad)
-                )
-                rebuildPaletteImageIfNeeded(height: newRect.height)
+                rebuildPaletteImageIfNeeded(height: Self.graphRect(for: newSize).height)
             }
             // Update only the image buffer. imageOpacity is intentionally NOT
             // set here — it is the sole responsibility of onChange(of: isFading)
@@ -293,6 +294,25 @@ struct SpectrogramView: View {
         }
     }
 
+    // MARK: - Canvas keys
+
+    /// Everything layer 3 draws from.
+    private struct ChromeKey: Equatable, Sendable {
+        let rect: CGRect
+        let palette: PaletteType
+        let lowerRange: Float
+        let upperRange: Float
+        /// The cached strip, by identity: a rebuilt strip is a new image.
+        let paletteImage: ObjectIdentifier?
+    }
+
+    /// Everything layer 4 draws from.
+    private struct RulerKey: Equatable, Sendable {
+        let rect: CGRect
+        let metadata: AudioMetadata?
+        let effectiveNyquist: Double?
+    }
+
     // MARK: - Overlay helpers
 
     /// `true` when the analysis overlay (Layer 6) should be visible.
@@ -313,6 +333,14 @@ struct SpectrogramView: View {
         case .decoding: return "Decoding audio…"
         default:        return ""
         }
+    }
+
+    /// The inner graph rect for a view of `size`: the padding around it holds
+    /// the rulers, the palette strip and the dB ruler.
+    private static func graphRect(for size: CGSize) -> CGRect {
+        CGRect(x: leftPad, y: topPad,
+               width:  max(1, size.width  - leftPad - rightPad),
+               height: max(1, size.height - topPad  - bottomPad))
     }
 
     /// Report the usable graph pixel dimensions to the ViewModel.
@@ -353,36 +381,42 @@ struct SpectrogramView: View {
         // red rather than black, so the strip fills flush to its top border.
         let maxNormalized = Float(254) / Float(255)
 
-        var pixels = [UInt32](repeating: 0xFF000000, count: w * h)
+        // BGRA bytes — the in-memory order of the palette's packed ARGB words
+        // on a little-endian machine, which is how ImageBuilder lays them out.
+        var bytes = [UInt8](repeating: 0, count: w * h * 4)
         for row in 0..<h {
             let rawNorm = 1.0 - (Float(row) / Float(h))
             let norm    = min(rawNorm, maxNormalized)
             let argb    = palette.color(for: norm < 0 ? 0 : norm)
-            // Fill all `w` pixels in this row at once rather than looping
-            // over each column individually.
-            pixels.replaceSubrange(row * w ..< (row + 1) * w, with: repeatElement(argb, count: w))
+            let pixel: [UInt8] = [UInt8(truncatingIfNeeded: argb),
+                                  UInt8(truncatingIfNeeded: argb >> 8),
+                                  UInt8(truncatingIfNeeded: argb >> 16),
+                                  UInt8(truncatingIfNeeded: argb >> 24)]
+            for x in 0..<w {
+                let offset = (row * w + x) * 4
+                bytes.replaceSubrange(offset ..< offset + 4, with: pixel)
+            }
         }
 
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo(rawValue:
-            CGImageAlphaInfo.premultipliedFirst.rawValue |
-            CGBitmapInfo.byteOrder32Little.rawValue)
-
-        // `unsafe`: CGContext takes its backing store as a raw pointer. The
-        // context lives only inside the closure, so the pointer never escapes.
-        return unsafe pixels.withUnsafeMutableBytes { rawBytes in
-            guard let ctx = unsafe CGContext(
-                data: rawBytes.baseAddress,
-                width: w,
-                height: h,
-                bitsPerComponent: 8,
-                bytesPerRow: w * 4,
-                space: colorSpace,
-                bitmapInfo: bitmapInfo.rawValue
-            ) else { return nil }
-            return ctx.makeImage()
-        }
+        // Core Image turns the bytes into a CGImage through bounds-checked
+        // `Data` rather than a raw pointer into a bitmap context's store. Color
+        // management is off in `paletteContext`, so the bytes pass through
+        // unchanged (verified identical to the former CGContext path).
+        let space = CGColorSpaceCreateDeviceRGB()
+        let source = CIImage(bitmapData: Data(bytes), bytesPerRow: w * 4,
+                             size: CGSize(width: w, height: h), format: .BGRA8, colorSpace: space)
+        return Self.paletteContext.createCGImage(source, from: source.extent,
+                                                 format: .BGRA8, colorSpace: space)
     }
+
+    /// Renders the palette strip. Built once; color management off (no
+    /// working or output color space) so palette bytes reach the image as-is.
+    @MainActor
+    private static let paletteContext = CIContext(options: [
+        .workingColorSpace: NSNull(),
+        .outputColorSpace:  NSNull(),
+        .cacheIntermediates: false,
+    ])
 
     // MARK: - Drawing
 
@@ -508,39 +542,17 @@ struct SpectrogramView: View {
         )
     }
 
-    /// Draw the palette strip using the pre-rendered cached CGImage.
-    /// Falls back to the per-pixel path if the cache is unavailable (e.g., on
-    /// first layout before `onAppear` fires).
+    /// Draw the palette strip using the pre-rendered cached CGImage. Before
+    /// `onAppear` has filled the cache (the first layout pass), the same image
+    /// is built on the spot rather than drawn a second, slower way.
     private func drawPaletteStrip(context: inout GraphicsContext, rect: CGRect) {
         let stripRect = paletteStripRect(for: rect)
-
-        if let cgImage = cachedPaletteImage {
-            context.draw(
-                Image(decorative: cgImage, scale: 1.0),
-                in: stripRect
-            )
-        } else {
-            // Fallback: draw per-pixel (matches original behavior).
-            let palette    = Palette.make(settings.palette)
-            let pixelCount = Int(stripRect.height)
-            guard pixelCount > 0 else {
-                context.stroke(Path(stripRect), with: .color(.primary), lineWidth: 1)
-                return
-            }
-            let maxNormalized = Float(254) / Float(255)
-            for row in 0..<pixelCount {
-                let rawNorm   = 1.0 - (Float(row) / Float(pixelCount))
-                let norm      = min(rawNorm, maxNormalized)
-                let argb      = palette.color(for: norm < 0 ? 0 : norm)
-                let r = Double((argb >> 16) & 0xFF) / 255.0
-                let g = Double((argb >>  8) & 0xFF) / 255.0
-                let b = Double( argb        & 0xFF) / 255.0
-                let rowRect = CGRect(x: stripRect.minX, y: stripRect.minY + CGFloat(row),
-                                     width: stripRect.width, height: 1)
-                context.fill(Path(rowRect), with: .color(Color(red: r, green: g, blue: b)))
-            }
+        let image = cachedPaletteImage
+            ?? buildPaletteImage(paletteType: settings.palette,
+                                 pixelHeight: max(1, Int(rect.height.rounded())))
+        if let image {
+            context.draw(Image(decorative: image, scale: 1.0), in: stripRect)
         }
-
         context.stroke(Path(stripRect), with: .color(.primary), lineWidth: 1)
     }
 
@@ -578,5 +590,28 @@ struct SpectrogramView: View {
                          at: CGPoint(x: labelX, y: y),
                          anchor: .leading)
         }
+    }
+}
+
+// MARK: - KeyedCanvas
+
+/// A `Canvas` that redraws only when `key` changes.
+///
+/// A `Canvas`'s drawing closure is a new value on every evaluation of the view
+/// that builds it, and SwiftUI cannot compare closures, so a bare `Canvas` in
+/// `SpectrogramView` redrew all of its ruler labels on every spectrogram frame —
+/// about 0.5 ms each, twice a frame, measured on a filling 20-minute file.
+/// Declaring the view `Equatable` on `key` alone (applied with `.equatable()`)
+/// lets SwiftUI skip it whenever the key is unchanged. `key` must therefore
+/// capture every value `draw` reads; the environment (light or dark appearance)
+/// still reaches the canvas as usual.
+private struct KeyedCanvas<Key: Equatable & Sendable>: View, Equatable {
+    let key: Key
+    let draw: (inout GraphicsContext) -> Void
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
+
+    var body: some View {
+        Canvas { context, _ in draw(&context) }
     }
 }

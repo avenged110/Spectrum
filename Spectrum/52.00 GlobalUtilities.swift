@@ -1,12 +1,12 @@
 // MARK: - GlobalUtilities.swift
 // Copyright © 2026 avenged110.
 // SPDX-License-Identifier: GPL-3.0-only
-// Miscellaneous utilities shared across the application: the analysis overlay, path-bar chrome,
-// the shared open panel, the NSViewRepresentable window accessor, and number formatting.
+// Miscellaneous utilities shared across the application: the analysis overlay, the
+// NSViewRepresentable window accessor, and number formatting. The path-bar chrome and the
+// shared open panel are in UtilityKit.
 
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 // MARK: - AnalysisOverlay
 
@@ -66,180 +66,47 @@ struct AnalysisOverlay: View {
     }
 }
 
-// MARK: - PathBarChrome
-
-/// The visual shell of a path bar (background fill + border stroke) at a fixed
-/// 24 pt height, accepting arbitrary content via a `@ViewBuilder` slot.
-///
-/// Separating chrome from content allows callers (e.g. `MetadataBar`) to keep
-/// the shell permanently visible while animating only the content layer — so
-/// the bar outline never flickers during a crossfade.
-struct PathBarChrome<Content: View>: View {
-
-    @ViewBuilder let content: Content
-
-    private let barHeight: CGFloat = 24
-
-    var body: some View {
-        ZStack(alignment: .leading) {
-            // Shell — always rendered at full opacity.
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color(NSColor.controlBackgroundColor))
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
-
-            // Content slot — caller controls opacity/animation.
-            content
-        }
-        .frame(height: barHeight)
-    }
-}
-
-// MARK: - SharedOpenPanel
-
-/// Configuration options for presenting an NSOpenPanel as a sheet.
-@MainActor
-struct OpenPanelConfiguration {
-    var canChooseFiles: Bool = true
-    var canChooseDirectories: Bool = false
-    var allowsMultipleSelection: Bool = false
-    var allowedContentTypes: [UTType] = []
-
-    var title: String?
-    var message: String?
-    var prompt: String?
-
-    init(
-        canChooseFiles: Bool = true,
-        canChooseDirectories: Bool = false,
-        allowsMultipleSelection: Bool = false,
-        allowedContentTypes: [UTType] = [],
-        title: String? = nil,
-        message: String? = nil,
-        prompt: String? = nil
-    ) {
-        self.canChooseFiles = canChooseFiles
-        self.canChooseDirectories = canChooseDirectories
-        self.allowsMultipleSelection = allowsMultipleSelection
-        self.allowedContentTypes = allowedContentTypes
-        self.title = title
-        self.message = message
-        self.prompt = prompt
-    }
-}
-
-/// The result of an open-panel presentation.
-@MainActor
-enum OpenPanelSelection {
-    case canceled
-    case urls([URL])
-}
-
-/// Centralized helper for presenting `NSOpenPanel` as a sheet attached to a window.
-@MainActor
-enum OpenPanelPresenter {
-
-    /// Presents a configured `NSOpenPanel` as a sheet.
-    ///
-    /// - Parameters:
-    ///   - configuration: Configuration options for the panel.
-    ///   - window: The window to attach the sheet to.
-    ///             If `nil`, falls back to `keyWindow` then `mainWindow`.
-    /// - Returns: `.urls([URL])` if the user confirmed, `.canceled` otherwise.
-    static func present(
-        configuration: OpenPanelConfiguration,
-        attachedTo window: NSWindow? = nil
-    ) async -> OpenPanelSelection {
-        let panel = NSOpenPanel()
-
-        panel.canChooseFiles = configuration.canChooseFiles
-        panel.canChooseDirectories = configuration.canChooseDirectories
-        panel.allowsMultipleSelection = configuration.allowsMultipleSelection
-
-        if !configuration.allowedContentTypes.isEmpty {
-            panel.allowedContentTypes = configuration.allowedContentTypes
-        }
-
-        // Default initial directory: ~/Desktop.
-        if let desktop = FileManager.default.urls(
-            for: .desktopDirectory, in: .userDomainMask).first {
-            panel.directoryURL = desktop
-        }
-
-        if let title = configuration.title { panel.title = title }
-        if let message = configuration.message { panel.message = message }
-        if let prompt = configuration.prompt { panel.prompt = prompt }
-
-        // Enforce fixed size and non-resizable behavior.
-        panel.styleMask.remove(.resizable)
-        panel.setContentSize(NSSize(width: 600, height: 400))
-        panel.isMovable = false
-
-        let targetWindow = window ?? NSApp.keyWindow ?? NSApp.mainWindow
-
-        return await withCheckedContinuation { continuation in
-            if let targetWindow {
-                panel.beginSheetModal(for: targetWindow) { response in
-                    if response == .OK {
-                        continuation.resume(returning: .urls(panel.urls))
-                    } else {
-                        continuation.resume(returning: .canceled)
-                    }
-                }
-            } else {
-                // Fallback: app-modal (should rarely occur).
-                panel.begin { response in
-                    if response == .OK {
-                        continuation.resume(returning: .urls(panel.urls))
-                    } else {
-                        continuation.resume(returning: .canceled)
-                    }
-                }
-            }
-        }
-    }
-}
-
 // MARK: - WindowAccessor
 
 /// An `NSViewRepresentable` shim that captures the hosting `NSWindow` from within
 /// a SwiftUI view hierarchy. Attach it via `.background(WindowAccessor(window: $hostingWindow))`.
+///
+/// The window arrives through `viewWillMove(toWindow:)`, whose argument is an
+/// ordinary strong reference, rather than by reading `NSView.window`, which
+/// AppKit declares `unowned(unsafe)` (an opt-out of strict memory safety). It
+/// also fires only when the window actually changes, so nothing runs on the
+/// per-frame `updateNSView` calls a filling spectrogram causes.
 struct WindowAccessor: NSViewRepresentable {
     @Binding var window: NSWindow?
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        // Defer the binding write one run-loop turn so the NSView is fully
-        // inserted into the window hierarchy before we read view.window.
-        // `unsafe` here and in updateNSView: AppKit declares `NSView.window`
-        // `unowned(unsafe)`; it is read on the main actor while the view is live.
-        Task { @MainActor in
-            self.window = unsafe view.window
-        }
+    func makeNSView(context: Context) -> WindowReportingView {
+        let view = WindowReportingView()
+        view.onWindowChange = report
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        // Capture the window reference into a local so the value is stable
-        // across the async hop. Both the identity check and the binding write
-        // are performed inside the same @MainActor Task, ensuring they execute
-        // atomically on a single actor hop. This prevents the race that arises
-        // when multiple updateNSView calls arrive in rapid succession: if the
-        // guard ran outside the Task (against the binding's value at call time),
-        // all callers could pass it before any Task had actually written the new
-        // value, dispatching redundant writes. Performing both operations inside
-        // the Task means each one re-reads self.window against the already-written
-        // state, so only the first write proceeds and the rest are no-ops.
-        //
-        // The synchronous check below only skips the Task in the common case —
-        // `updateNSView` runs on every render of the containing view, which is
-        // every display-link frame while a spectrogram fills — and never
-        // replaces the check inside the Task.
-        let current = unsafe nsView.window
-        guard current !== window else { return }
+    func updateNSView(_ nsView: WindowReportingView, context: Context) {
+        nsView.onWindowChange = report
+    }
+
+    /// Writes the binding one run-loop turn later: the callback fires while
+    /// AppKit is moving the view, in the middle of a SwiftUI update, where a
+    /// state write would be "modifying state during view update". The check
+    /// inside the task drops a value already superseded or already current.
+    private func report(_ newWindow: NSWindow?) {
+        let binding = $window
         Task { @MainActor in
-            guard current !== self.window else { return }
-            self.window = current
+            guard binding.wrappedValue !== newWindow else { return }
+            binding.wrappedValue = newWindow
+        }
+    }
+
+    final class WindowReportingView: NSView {
+        var onWindowChange: ((NSWindow?) -> Void)?
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            super.viewWillMove(toWindow: newWindow)
+            onWindowChange?(newWindow)
         }
     }
 }

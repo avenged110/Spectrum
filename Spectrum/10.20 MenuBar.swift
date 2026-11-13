@@ -14,7 +14,7 @@ import SwiftUI
 ///
 /// The generic rules — why the Edit menu is AppKit's (`StandardEditCommands` +
 /// `StandardEditMenu`, installed by AppDelegate), why `.windowSize` and
-/// `.windowArrangement` are left to AppKit, why View items go in through
+/// `.windowArrangement` are left to AppKit (Minimize and Zoom restored by MinimizeZoomCommands), why View items go in through
 /// `CommandGroup(after: .toolbar)` rather than a `CommandMenu("View")` — are
 /// documented on the MenuBarKit pieces themselves. Spectrum-specific notes:
 ///
@@ -43,7 +43,9 @@ import SwiftUI
 /// AppKit consumes a key equivalent that matches a DISABLED item too (it
 /// beeps), so only a missing shortcut lets the character reach the field. They
 /// are also disabled then, and the actions refuse to run, because the items can
-/// still be clicked while a panel is open.
+/// still be clicked while a panel is open. The checkmarked Channel N / Stream N
+/// items follow the same rule: picking one mid-export would start a new run
+/// and the export would capture it half-drawn.
 ///
 /// ### Group {} splitting
 /// `CommandsBuilder` takes at most ten arguments per block; each `Group` resets
@@ -96,6 +98,9 @@ struct SpectrumMenuBar: Commands {
             // Edit: SwiftUI builds none; AppDelegate installs AppKit's.
             StandardEditCommands()
 
+            // Window: `.commandsRemoved()` drops SwiftUI's Minimize, Zoom and Bring All to
+            // Front; AppKit supplies only Fill / Center and the window list.
+            MinimizeZoomCommands()
             BringAllToFrontCommands()
         }
 
@@ -136,7 +141,7 @@ struct SpectrumMenuBar: Commands {
                                     }
                                 )
                             )
-                            .disabled(meta.channelCount == 1)
+                            .disabled(meta.channelCount == 1 || viewModel.isSheetPresented)
                         }
                     } else {
                         Text("No File Loaded")
@@ -172,7 +177,7 @@ struct SpectrumMenuBar: Commands {
                                     }
                                 )
                             )
-                            .disabled(meta.streamCount == 1)
+                            .disabled(meta.streamCount == 1 || viewModel.isSheetPresented)
                         }
                     } else {
                         Text("No File Loaded")

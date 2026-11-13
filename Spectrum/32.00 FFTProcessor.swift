@@ -241,6 +241,26 @@ final class FFTProcessor {
     /// If `samples.count` does not equal `fftSize`, the input is zero-padded
     /// or truncated.
     func process(_ samples: [Float], into output: inout [Float]) {
+        process(samples, base: 0, start: 0, available: samples.count, into: &output)
+    }
+
+    /// Compute the windowed FFT of the `fftSize` samples starting at stream
+    /// index `start`, read in place from `source` — whose first element is
+    /// stream index `base` — with every sample outside `[0, available)`
+    /// taken as zero (zero-padding at the stream's edges).
+    ///
+    /// Reading the window straight out of the pipeline's sample buffer, during
+    /// the windowing pass that has to touch every sample anyway, replaces a
+    /// separate copy into a scratch window per FFT (formerly a raw-pointer
+    /// `memcpy`, and a clearing pass before it at the edges). Bit-identical to
+    /// copying first: every in-range sample meets the same window coefficient,
+    /// and every out-of-range one is the same `+0`.
+    ///
+    /// `available` must not exceed `base + source.count`; every in-range
+    /// index at or after `start` must be at or after `base` (the pipeline
+    /// never drops a sample a remaining window reads).
+    func process(_ source: [Float], base: Int, start: Int, available: Int,
+                 into output: inout [Float]) {
         precondition(output.count == bandCount)
 
         // ── Step 1: Window and split into even/odd samples (one pass) ────────
@@ -252,19 +272,26 @@ final class FFTProcessor {
         // uniqueness every element — 2.7× faster at fftSize 2048.
         var even = evenPart, odd = oddPart
         evenPart = []; oddPart = []
-        let half  = bandCount
-        let valid = min(samples.count, fftSize)
-        if valid == fftSize {
+        let half = bandCount
+        // The in-range stream indices this window covers.
+        let lo = max(start, 0)
+        let hi = min(start + fftSize, available)
+        assert(lo >= hi || lo >= base, "window starts at \(lo), before the retained samples at \(base)")
+        if lo == start && hi == start + fftSize && lo >= base {
+            // Interior window: every sample exists.
+            let offset = start - base
             for i in 0..<half {
-                even[i] = samples[2 &* i] * evenWindow[i]
-                odd[i]  = samples[2 &* i &+ 1] * oddWindow[i]
+                even[i] = source[offset &+ 2 &* i] * evenWindow[i]
+                odd[i]  = source[offset &+ 2 &* i &+ 1] * oddWindow[i]
             }
         } else {
-            // Short input: samples past the end are zero, as zero-padding gives.
+            // Edge window: samples outside the stream (or, defensively, before
+            // the retained buffer) are zero, as zero-padding gives.
+            let first = max(lo, base)
             for i in 0..<half {
-                let e = 2 &* i, o = e &+ 1
-                even[i] = e < valid ? samples[e] * evenWindow[i] : 0
-                odd[i]  = o < valid ? samples[o] * oddWindow[i]  : 0
+                let e = start &+ 2 &* i, o = e &+ 1
+                even[i] = e >= first && e < hi ? source[e - base] * evenWindow[i] : 0
+                odd[i]  = o >= first && o < hi ? source[o - base] * oddWindow[i]  : 0
             }
         }
 

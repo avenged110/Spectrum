@@ -50,11 +50,6 @@ enum PipelineEvent: Sendable {
     /// A fatal error occurred; the pipeline has stopped.
     case error(String)
 
-    var isComplete: Bool {
-        if case .complete = self { return true }
-        return false
-    }
-
     /// A finished result worth caching even from a canceled run.
     var isResult: Bool {
         switch self {
@@ -212,14 +207,6 @@ actor AnalysisPipeline: Loggable {
 
         continuation.yield(.metadata(metadata))
 
-        guard metadata.duration > 0 else {
-            let msg = "Unknown duration"
-            log("Error — \(msg)")
-            continuation.yield(.error(msg))
-            continuation.finish()
-            return
-        }
-
         guard outputWidth > 0 && outputHeight > 0 else {
             let msg = "Invalid output dimensions (\(outputWidth)×\(outputHeight))"
             log("Error — \(msg)")
@@ -245,18 +232,50 @@ actor AnalysisPipeline: Loggable {
             metadataDuration:   metadata.duration
         )
         let sampleRate = resolved.sampleRate
+        guard sampleRate.isFinite, sampleRate > 0 else {
+            let msg = "Unknown sample rate"
+            log("Error — \(msg)")
+            continuation.yield(.error(msg))
+            continuation.finish()
+            return
+        }
+
+        // No duration anywhere — not in the stream, the container, or a bitrate
+        // to estimate one from (an unfinalized Matroska recording, say). The
+        // columns need the length up front, so decode the stream once just to
+        // count its samples, then lay the run out over that.
+        var duration = resolved.duration
+        var countedSamples: Int?
+        if !(duration.isFinite && duration > 0) {
+            log("No duration in the file — counting samples before laying out the columns.")
+            continuation.yield(.decoding)
+            let counted: Int?
+            do {
+                counted = try await Self.countSamples(url: url, streamIndex: settings.streamIndex,
+                                                      channel: settings.channelIndex, throttle: throttle)
+            } catch {
+                log("Decode error while counting — \(error.localizedDescription)")
+                continuation.yield(.error("Cannot decode audio: \(error.localizedDescription)"))
+                continuation.finish()
+                return
+            }
+            guard let counted else { continuation.finish(); log("Pipeline canceled."); return }
+            countedSamples = counted
+            duration = Double(counted) / sampleRate
+            log("Counted \(counted) samples — duration \(duration.fixed(2))s.")
+        }
 
         // If either value differs from the header, publish a corrected metadata
         // event so the frequency ruler, metadata bar, and ImageBuilder ratio are
         // all updated before any .progress events arrive.
         let resolvedMetadata: AudioMetadata
         let rateChanged     = abs(sampleRate - metadata.sampleRate) > 0.5
-        let durationChanged = abs(resolved.duration - metadata.duration) > 0.5
+        let durationChanged = !(abs(duration - metadata.duration) <= 0.5)
         if rateChanged || durationChanged {
             log("Audio info corrected: "
               + "sampleRate \(metadata.sampleRate) → \(sampleRate) Hz, "
               + "duration \(metadata.duration.fixed(2))s "
-              + "→ \(resolved.duration.fixed(2))s.")
+              + "→ \(duration.fixed(2))s.")
             resolvedMetadata = AudioMetadata(
                 fileName:     metadata.fileName,
                 codec:        metadata.codec,
@@ -264,7 +283,7 @@ actor AnalysisPipeline: Loggable {
                 bitDepth:     metadata.bitDepth,
                 channelCount: metadata.channelCount,
                 bitrate:      metadata.bitrate,
-                duration:     resolved.duration,
+                duration:     duration,
                 streamCount:  metadata.streamCount
             )
             continuation.yield(.metadata(resolvedMetadata))
@@ -275,9 +294,11 @@ actor AnalysisPipeline: Loggable {
         // A corrupt header can claim an absurd duration, and `Int(_:)` traps on
         // a value past `Int.max`. The capped prediction still lays out a run;
         // the decoded count then corrects it (see `streamingCompute`).
+        // A counted length is used as is: converting it to a duration and back
+        // could round it one sample short.
         let predictedSamples = resolvedMetadata.duration * sampleRate
-        let totalSamples = predictedSamples.isFinite
-            ? Int(min(predictedSamples, Self.maxPredictedSamples)) : 0
+        let totalSamples = countedSamples ?? (predictedSamples.isFinite
+            ? Int(min(predictedSamples, Self.maxPredictedSamples)) : 0)
         guard totalSamples > 0 else {
             let msg = "No audio samples found"
             log("Error — \(msg)")
@@ -768,6 +789,26 @@ actor AnalysisPipeline: Loggable {
         return (magnitudes: allMagnitudes, actualSamples: actualSamples, coveredSamples: coveredSamples)
     }
 
+    // MARK: - Sample count
+
+    /// Decode `channel` of the stream once, keeping nothing, and return how many
+    /// samples it holds: the length of a file that does not state one. `nil`
+    /// when the run is canceled; throws what the decoder throws.
+    private static func countSamples(url: URL, streamIndex: Int, channel: Int,
+                                     throttle: PipelineThrottle) async throws -> Int? {
+        var count = 0
+        for try await chunk in AudioDecoder.streamingDecode(url: url, channels: [channel],
+                                                            streamIndex: streamIndex,
+                                                            throttle: throttle) {
+            if Task.isCancelled { return nil }
+            await throttle.waitWhilePaused()
+            count += chunk.first?.count ?? 0
+        }
+        if Task.isCancelled { return nil }
+        guard count > 0 else { throw AudioDecoder.DecoderError.cannotReadSamples }
+        return count
+    }
+
     // MARK: - Column computation
 
     /// Compute the averaged dB magnitude spectrum of one spectrogram column for
@@ -778,7 +819,7 @@ actor AnalysisPipeline: Loggable {
     /// across concurrent tasks). Construction is effectively free because
     /// `FFTProcessorCache` amortizes the expensive DFT setup creation.
     ///
-    /// `nonisolated static` so it runs safely in a `TaskGroup` child task.
+    /// `static` (no actor state) so it runs in a `TaskGroup` child task.
     private static func computeColumnMagnitudes(
         col: Int,
         totalSamples: Int,
@@ -808,19 +849,11 @@ actor AnalysisPipeline: Loggable {
         }
     }
 
-    /// Core column-magnitude computation accepting a caller-owned `FFTProcessor`.
+    /// Core column-magnitude computation for one channel slot, with a
+    /// caller-owned `FFTProcessor`: `computeColumnMagnitudes` creates one per
+    /// column and reuses it across every slot of that column.
     ///
-    /// Used by:
-    ///   - The **recompute** pass (one shared processor for all correction columns).
-    ///   - `computeColumnMagnitudes` (creates the processor in the caller and
-    ///     delegates here).
-    ///
-    /// `nonisolated static` so it can be called from both actor-isolated context
-    /// and `TaskGroup` child tasks.
-    ///
-    /// Separating construction from the core loop lets the recompute pass
-    /// allocate a single `FFTProcessor` (four scratch buffers) for the entire
-    /// column sequence rather than once per column.
+    /// `static` (no actor state) so it runs in `TaskGroup` child tasks.
     private static func computeColumnMagnitudesWithProcessor(
         col: Int,
         totalSamples: Int,
@@ -839,43 +872,21 @@ actor AnalysisPipeline: Loggable {
         let kLast  = Int(floor(Double(colEnd - 1) / Double(hop)))
 
         var dbAccum  = [Float](repeating: 0, count: bandCount)
-        // windowDB, sumBuf and inputBuf are allocated once per column, not per window.
+        // windowDB and sumBuf are allocated once per column, not per window.
         var windowDB = [Float](repeating: 0, count: bandCount)
         var sumBuf   = [Float](repeating: 0, count: bandCount)
-        var inputBuf = [Float](repeating: 0, count: fftSize)
         var windowCount = 0
 
         // Samples that actually exist: `totalSamples` is the header's prediction,
         // and once the decoder hits EOF the last columns are computed with
-        // fewer than that. `fillBuffer` copies only what exists, so every
-        // window past this point must take the zero-padding path.
+        // fewer than that. Every sample past this point reads as zero.
         let available = min(totalSamples, base + samples.count)
 
         for k in kFirst...max(kFirst, kLast) {
-            let winStart = k * hop
-
-            // Determine whether this window is fully within the sample array
-            // (no zero-padding required at either edge). When it is, we can
-            // skip the `vDSP_vclr` zeroing pass entirely and go straight to the
-            // memcpy fill — saving one full pass over `fftSize` floats per
-            // interior window, which is the common case for all but the first
-            // and last few windows in the file.
-            let fullyInterior = winStart >= 0 && winStart + fftSize <= available
-            if fullyInterior {
-                // Fast path: fill without zeroing first. fillBuffer always
-                // writes exactly fftSize floats when the window is interior.
-                fillBuffer(from: samples, base: base, start: winStart,
-                           fftSize: fftSize, totalSamples: totalSamples,
-                           into: &inputBuf)
-            } else {
-                // Boundary window: zero-pad first, then overwrite with valid samples.
-                vDSP.clear(&inputBuf)
-                fillBuffer(from: samples, base: base, start: winStart,
-                           fftSize: fftSize, totalSamples: totalSamples,
-                           into: &inputBuf)
-            }
-
-            processor.process(inputBuf, into: &windowDB)
+            // The processor reads the window straight out of `samples`,
+            // zero-padding wherever it runs off either end of the stream.
+            processor.process(samples, base: base, start: k * hop,
+                              available: available, into: &windowDB)
 
             // Vectorized accumulation into a second buffer, then an O(1) swap:
             // passing `dbAccum` both by value and as `&` would make Swift copy
@@ -938,48 +949,5 @@ actor AnalysisPipeline: Loggable {
                                         columnCount: columnCount)
         let lastWindowStart = (max(0, colEnd - 1) / hop) * hop
         return lastWindowStart + fftSize
-    }
-
-    /// Fill a caller-owned `fftSize`-element buffer with samples starting at
-    /// `start`. Samples before index 0 or beyond `totalSamples` are left as
-    /// zero (the caller is responsible for pre-zeroing the buffer when the
-    /// window is not fully interior). Uses `memcpy` via unsafe buffer pointers
-    /// for the inner copy, which is faster than `Array.replaceSubrange` because
-    /// it avoids Swift's bounds-check and COW machinery on every element.
-    private static func fillBuffer(
-        from samples: [Float],
-        base: Int,
-        start: Int,
-        fftSize: Int,
-        totalSamples: Int,
-        into buffer: inout [Float]
-    ) {
-        let srcStart = max(start, 0)
-        let srcEnd   = min(start + fftSize, min(totalSamples, base + samples.count))
-        guard srcStart < srcEnd else { return }
-        // The sliding window never drops a sample a remaining column reads
-        // (`firstWindowStart`); reaching below `base` would be a logic error.
-        assert(srcStart >= base, "window starts at \(srcStart), before the retained samples at \(base)")
-        guard srcStart >= base else { return }
-        let destOffset = srcStart - start
-        let count      = srcEnd - srcStart
-        guard destOffset >= 0, destOffset + count <= min(fftSize, buffer.count) else { return }
-        // Copy `count` floats from `samples[srcStart...]` into `buffer[destOffset...]`
-        // using a direct memcpy. This is a non-overlapping, contiguous Float copy
-        // that the compiler can lower to a single SIMD memcpy instruction sequence.
-        //
-        // `unsafe`: the guards above prove both ranges in bounds — the source
-        // spans `[srcStart − base, srcEnd − base)` within `samples`, the
-        // destination `[destOffset, destOffset + count)` within `buffer`. The
-        // bounds-checked slice assignment measured ~25% slower per copy at
-        // fftSize 4096 (2026-09-27), and this runs once per FFT window.
-        unsafe samples.withUnsafeBufferPointer { src in
-            unsafe buffer.withUnsafeMutableBufferPointer { dst in
-                unsafe (dst.baseAddress! + destOffset).update(
-                    from: src.baseAddress! + (srcStart - base),
-                    count: count
-                )
-            }
-        }
     }
 }
