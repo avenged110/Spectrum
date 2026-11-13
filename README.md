@@ -11,6 +11,8 @@ A macOS 15 application for generating audio spectrograms, useful for inspecting 
 
 Spek (https://github.com/alexkay/spek, Copyright © 2010–2013 Alexander Kojevnikov and contributors, GPL-3.0) is an excellent application, but the macOS build always felt like a bit of an afterthought and never looked "at home" on the platform. Spectrum aims to be a macOS-focused reimplementation of Spek with a few modern performance improvements tacked-on. That said, support for a few of the more obscure file formats was eschewed in favor of considerably slimming the included FFmpeg build.
 
+![Spectrum's main window showing a rendered spectrogram.](README_hero_image.png)
+
 ## Installation
 
 Spectrum is not signed with an Apple Developer ID and is not notarized. To launch it, you can either disable Gatekeeper, remove the quarantine flag manually with the command below (using the appropriate path for your installation, of course), navigate to System Settings > Privacy & Security and click "Open Anyway" after first attempting a launch, or build it yourself with Xcode (open `Spectrum.xcodeproj` in Xcode and choose Product > Build).
